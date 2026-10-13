@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local working artifacts (produced at runtime, never shipped)
+*.tracking.json
+translations*.json
+blocks/
+record_work/
+render_work/
