@@ -14,3 +14,9 @@ translations*.json
 blocks/
 record_work/
 render_work/
+
+# v2.0 (agent-as-LLM) workflow artifacts
+me_work/
+render_check/
+unparsed.jsonl
+missing.jsonl
