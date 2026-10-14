@@ -1,6 +1,6 @@
 ---
 name: babeldoc-offline-translate
-description >-
+description: >-
   Offline collect→translate→replay pipeline that makes the agent itself the
   LLM translation backend for BabelDOC / pdf2zh PDF translation (layout
   preserved, EN→ZH by default, any language pair via env). Use when
