@@ -33,7 +33,7 @@ babeldoc runs (`babeldoc` CLI with `--openai` etc. works fine as-is).
 - On Windows set `PYTHONUTF8=1` in the session before running anything
   (prints include CJK source text; cp936 consoles crash otherwise).
 - Scripts live in `<skill>/scripts/`: `me_translator.py`,
-  `run_translation.py`, `export_texts.py`, `build_outputs.py`,
+  `run_translation.py`, `ocr_patch.py`, `export_texts.py`, `build_outputs.py`,
   `preflight.py`, `render_check.py`, `split_work.py`.
 
 ## File contract (work dir `./me_work`, override with `ME_WORK_DIR`)
@@ -69,6 +69,22 @@ pages (`ME_OCR_WORKAROUND=1` needed if collect raises ScannedPDFError), long
 path warning (copy PDF to a short ASCII name — Windows MAX_PATH), babeldoc
 version warning. Also copy the PDF to a short name proactively when warned.
 
+**OCR confirmation gate (mandatory).** If preflight reports image-dominant /
+scanned pages, or collect raises `ScannedPDFError`, the OCR workaround will
+run. Do NOT silently proceed: STOP and ask the user to confirm, defaulting to
+yes. Phrase it in the user's language, e.g.:
+
+> 这个 PDF 是扫描版，我会开启 OCR 模式。它会顺带修复消失的页码/短标题/
+> 标点；图标上 OCR 误读的杂字（例如脚印图形上的 `f`）会一并显示出来
+> （已知无害，不会清除）。是否继续？
+> （默认：是）
+
+Proceed normally if the user agrees (this is the default path; the fix is
+`ME_FIX_RECT_ORDER=1`, already on — the user never sets env vars themselves).
+Only if the user declines, run collect AND replay with `ME_FIX_RECT_ORDER=0`
+to reproduce stock babeldoc behavior. Digital PDFs never need this — do not
+ask for them.
+
 ### 1. Collect
 
 ```bash
@@ -77,7 +93,11 @@ python <skill>/scripts/run_translation.py collect <input.pdf> [page_range]
 
 Success: `[me] prompts=N ... unparsed=0`.
 - `prompts=0` → wrong range / image-only PDF: investigate before proceeding.
-- `ScannedPDFError` → rerun with `ME_OCR_WORKAROUND=1` (collect AND replay).
+- `ScannedPDFError` → first get the OCR confirmation (see the preflight gate
+  above), then rerun with `ME_OCR_WORKAROUND=1` (collect AND replay).
+  White-mask z-order is fixed automatically by `ocr_patch.py`
+  (`ME_FIX_RECT_ORDER=1`, default on): untranslated pass-through text (page
+  numbers, short headings, punctuation) is kept visible above its masking box.
 - Re-collect on a **different** PDF automatically archives the previous
   run's artifacts to `me_work/archive/<hash>_<ts>/` and starts clean.
 - Re-collect on the **same** PDF (e.g. extended page range) appends —
@@ -172,6 +192,11 @@ cross-page/column batching) and `references/troubleshooting.md`
 - `me_translator.py`'s `do_llm_translate(None)` probe must keep returning
   normally — any exception silently disables the whole LLM path.
 - Green replay (`missing=0`, exit 0) means every prompt hit the mapping.
+- Before any scanned-PDF (OCR) run, confirm with the user (default yes) — see
+  the preflight **OCR confirmation gate**; never silently enable OCR mode.
+  `ocr_patch.py`'s mask-order fix runs in-process only (never edit
+  site-packages) and defaults ON; set `ME_FIX_RECT_ORDER=0` only when the user
+  declines, to reproduce stock babeldoc behavior for comparison.
 
 ## Language pairs
 

@@ -18,12 +18,18 @@ producing the final mono + dual PDFs under <work>/out_replay/.
 Work dir: $ME_WORK_DIR or ./me_work under the current working directory.
 
 Environment switches:
-  ME_OCR_WORKAROUND=1  scanned PDF (text baked into page images with an
-                       invisible OCR layer): white-fill boxes mask the
-                       English in the image, black text is written on top.
-                       Also implied by ScannedPDFError on collect.
-  ME_LANG_IN / ME_LANG_OUT   source/target language (default en / zh).
-                       Must match between collect and replay (enforced).
+   ME_OCR_WORKAROUND=1  scanned PDF (text baked into page images with an
+                        invisible OCR layer): white-fill boxes mask the
+                        English in the image, black text is written on top.
+                        Also implied by ScannedPDFError on collect.
+   ME_FIX_RECT_ORDER=1  (default) keep white OCR masks UNDER untranslated
+                        pass-through text so page numbers / short headings
+                        stay visible (runtime monkeypatch, O in-process,
+                        site-packages untouched). =0 disables (stock
+                        babeldoc behavior: masks can cover pass-through text).
+                        See scripts/ocr_patch.py for the root cause.
+   ME_LANG_IN / ME_LANG_OUT   source/target language (default en / zh).
+                        Must match between collect and replay (enforced).
 """
 
 from __future__ import annotations
@@ -213,6 +219,12 @@ def main() -> int:
     from babeldoc.translator.translator import set_translate_rate_limiter
 
     from me_translator import MeTranslator
+
+    # Runtime z-order fix for ocr_workaround masks (in-memory only).
+    import ocr_patch
+
+    patch_on = ocr_patch.apply()
+    print(f"[me] ocr rect-order patch (ME_FIX_RECT_ORDER): {'ON' if patch_on else 'OFF'}")
 
     qps = 8
     set_translate_rate_limiter(qps)
