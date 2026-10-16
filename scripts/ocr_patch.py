@@ -27,7 +27,8 @@ Fix (char-side, NOT rect-side):
        tried first and regressed: masks then painted before the background
        image form/curves and the blue English bled through.)
     2. Glyph-less font substitution: some scan-OCR fonts (e.g. HiddenHorzOCR)
-       embed a CFF with CharStrings count=1 -- literally no glyphs. Chars
+       embed a CFF with CharStrings count=1 -- literally no glyphs (some
+       ship only '.notdef'+'.null', count=2, still no real glyphs). Chars
        whose font_id points at such a font render as nothing even when
        painted above the mask (verified: p9 "153~" invisible in both stock
        and v1/v2 because C0_0 has 1 charstring, GIDs 49/51/53/126 out of
@@ -93,16 +94,33 @@ def _raise_original_chars(paragraph) -> int:
     return stamped
 
 
-def _font_glyph_count(font_bytes: bytes) -> int | None:
-    """Return the font's glyph count via MuPDF, or None if unloadable.
+def _font_displayable_glyph_count(font_bytes: bytes) -> int | None:
+    """Return the number of *displayable* glyphs via MuPDF, or None.
 
-    MuPDF handles CFF, TrueType and OTF uniformly; a stub scan-OCR font
-    (e.g. HiddenHorzOCR) loads with glyph_count==1 (only .notdef).
+    A stub scan-OCR font may carry only placeholder glyphs -- '.notdef'
+    (always present) and/or '.null' (empty glyph) -- with no real
+    characters. Such a font renders nothing even when painted above the
+    mask, so it must be treated as glyphless. We exclude the standard
+    non-printing placeholders; if glyph names are unavailable we fall back
+    to a count heuristic (<=2 placeholders => empty).
     """
     try:
         import pymupdf
 
-        return pymupdf.Font(fontbuffer=font_bytes).glyph_count
+        f = pymupdf.Font(fontbuffer=font_bytes)
+        total = f.glyph_count
+        if total is None:
+            return None
+        try:
+            names = f.glyph_names()
+        except Exception:
+            names = None
+        if names:
+            real = [n for n in names if n not in (".notdef", ".null", "", None)]
+            return len(real)
+        # Name-based detection unavailable: heuristic by total count.
+        # <=2 means only .notdef, or .notdef+.null -> no displayable glyphs.
+        return 0 if total <= 2 else total
     except Exception:
         return None
 
@@ -122,9 +140,10 @@ def _is_glyphless_font(xref_id: int | None, source_path: str | None) -> bool:
             # extract_font returns (name, ext, subtype, buffer).
             font_bytes = doc.extract_font(xref_id)[3]
             if font_bytes:
-                count = _font_glyph_count(font_bytes)
-                # count<=1 means only .notdef (or empty): no usable glyphs.
-                result = count is not None and count <= 1
+                count = _font_displayable_glyph_count(font_bytes)
+                # 0 displayable glyphs (only .notdef/.null placeholders) =>
+                # no usable glyphs -> treat as glyphless.
+                result = count is not None and count <= 0
         finally:
             doc.close()
     except Exception:
