@@ -19,9 +19,6 @@
 | glossary warnings (non-fatal) | a segment contains a glossary source term but not its target term | review each: fix genuine misses in the translation; delete the glossary entry if the term is intentionally rendered differently |
 | replay `missing_llm>0` / WARNING / exit 1 | prompt key absent from llm_outputs.json (stale prompts, edited prompts) | inspect `missing.jsonl`; translate those sources, rebuild, replay (stale miss logs are cleared at replay start) |
 | translated text invisible / double English | scanned image shows through where translation layer is thin | ensure `ME_OCR_WORKAROUND=1`; if page has 0 text chars it's image-only — cannot be fixed by this pipeline |
-| untranslated page numbers / short headings / punctuation missing in scanned output | stock babeldoc z-order: untranslated pass-through chars paint before their own white mask | fixed automatically by `ocr_patch.py` (`ME_FIX_RECT_ORDER=1`, default). If missing, ensure you run via `run_translation.py` (not a hand-rolled babeldoc call) and the switch is not set to `0`; `ME_FIX_RECT_ORDER=0` reproduces stock behavior for A/B comparison |
-| stray letter (e.g. `f`) printed on a scanned icon | OCR misreads an icon shape as a text char; the z-order fix (needed to reveal page numbers) also raises it above the mask that stock correctly hid | **accepted as harmless** — a drop-artifact pass was removed because telling an icon from a narrow multi-line text block is unreliable (risk of deleting real text). Do NOT "fix" by dropping chars in a tall-narrow mask |
-| another OCR font renders nothing (glyph-less) | some scan-OCR fonts embed a CFF with 1 CharStrings (no glyphs) | `ocr_patch.py` substitutes a real 1-byte page font for ASCII codes of such chars. Set `ME_DEBUG_SUBST=1` to trace per-char substitution and glyph-count decisions |
 | collect looked fine but replay output identical to input | capability probe failed (exception in `do_llm_translate(None)`) or wrong mode env | rerun replay; logs must show `Successful: N, Fallback: 0` |
 | cover/title page still English | no text layer on that page (0 extractable chars) | expected; tell the user those pages need manual typesetting or real OCR re-creation |
 | collect is slow (~1 min even for 5 pages) | babeldoc unconditionally typesets + renders output PDFs after translating (`high_level.py`); no supported switch to skip rendering while keeping the translation stage | accept the cost; collect runs once per input/range. Skipping would require a version-coupled monkeypatch of `PDFCreater.write` — deliberately not supported. |
@@ -35,5 +32,3 @@
 4. replay: `Successful: N  Fallback: 0`, `missing_llm=0 missing_fb=0`, exit 0
 5. `render_check.py` PNGs: Chinese present, no bleed-through English,
    page numbers/margins intact, cross-page paragraphs coherent.
-6. `ocr rect-order patch (ME_FIX_RECT_ORDER): ON` in the run log (scanned
-   PDFs): page numbers and short untranslated headings must be visible.
