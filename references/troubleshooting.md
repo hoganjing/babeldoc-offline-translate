@@ -23,6 +23,9 @@
 | cover/title page still English | no text layer on that page (0 extractable chars) | expected; tell the user those pages need manual typesetting or real OCR re-creation |
 | collect is slow (~1 min even for 5 pages) | babeldoc unconditionally typesets + renders output PDFs after translating (`high_level.py`); no supported switch to skip rendering while keeping the translation stage | accept the cost; collect runs once per input/range. Skipping would require a version-coupled monkeypatch of `PDFCreater.write` — deliberately not supported. |
 | slices exist but build still reports missing | slices were generated before new sources were collected | rerun `split_work.py --force` (seeds existing translations), refill the new `""` entries |
+| pure-pipe: `llm_chunk_N.json` missing / merged keys < expected | a subagent didn't return its file, or wrote wrong keys | check `me_work/` for each `llm_chunk_N.json`; re-run only the missing chunk's subagent (its `chunk_N.json` still holds the assignment) |
+| pure-pipe: `TAG-SEQUENCE PROBLEMS > 0` | the agent dropped/added/renumbered a `<bN>` tag | fix that record's translation (re-run that one chunk's subagent or hand-fix the zh), then rerun `pipe_merge.py`. Do NOT hand-edit tags into place — re-translate. |
+| pure-pipe: batch value not valid JSON array | subagent returned a string/object instead of `[{"id","output"}]` | re-run that chunk's subagent; the instruction mandates the array form |
 
 ## Sanity checklist before delivering
 

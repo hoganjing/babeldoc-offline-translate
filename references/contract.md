@@ -102,6 +102,34 @@ Written after a successful collect:
   `cross_page` / `cross_column` / `page` groups — audit how many segments
   were merged across page/column breaks.
 
+## Pure-pipe flow (v2.5) — no source-keyed intermediate
+
+`prompts.jsonl` is the single source of truth. The agent translates it
+directly instead of going through `zh_texts.json` / `build_outputs.py`:
+
+1. `pipe_prep.py` reads `prompts.jsonl` and splits it into `chunk_N.json`
+   (round-robin, `--chunks N`). Each chunk carries an embedded instruction and
+   a `records` list. A record is:
+   - `batch`: `{"key":"b:...", "kind":"batch",
+     "items":[{"id":N,"input":"<en with <bN>>","seed":null|"<zh>"}, ...]}`
+   - `single`: `{"key":"s:...", "kind":"single", "source":"<en with <bN>>",
+     "seed":null|"<zh>"}`
+2. One subagent per chunk writes `llm_chunk_N.json` = `{"<key>": <value>}`:
+   - batch value = JSON array `[{"id":N,"output":"<zh with <bN>>"}, ...]`
+     (ids unchanged; this is what `do_llm_translate` returns on replay).
+   - single value = plain zh string (this is what `do_llm_translate` returns
+     for the single-path prompt).
+3. `pipe_merge.py` globs `llm_chunk_*.json`, writes `llm_outputs.json`, and
+   validates the `<bN>` tag sequence of every input against its output
+   (lists `TAG-SEQUENCE PROBLEMS`). It also reuses single translations to seed
+   `fallback_outputs.json` (covers the plain `do_translate` path if it fires).
+4. `replay` serves the mapping exactly as in the v2.0 path.
+
+Because the `<bN>` tags travel inside the text the agent sees, there is no
+separate re-injection step that could misalign them — the only failure mode is
+the agent dropping/duplicating a tag, which `pipe_merge.py` flags before
+replay.
+
 ## Not supported (deliberate)
 
 - Skipping collect-phase PDF rendering: `high_level.translate`
