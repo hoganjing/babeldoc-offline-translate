@@ -3,7 +3,7 @@ name: babeldoc-offline-translate
 description: >-
   Offline collect→translate→replay pipeline that makes the agent itself the
   LLM translation backend for BabelDOC / pdf2zh PDF translation (layout
-  preserved, EN→ZH by default, any language pair via env). v2.5 ("pure-pipe"):
+  preserved, EN→ZH by default, any language pair via env). v2.6 ("pure-pipe"):
   feed BabelDOC's verbatim prompts straight to the agent, preserve <bN> tags
   byte-for-byte, merge responses directly into llm_outputs.json — no
   source-keyed intermediate and no tag re-injection step. Use when
@@ -13,16 +13,16 @@ description: >-
   run must serve pre-translated text through a custom BaseTranslator.
 ---
 
-# BabelDOC Offline Translator (agent-as-LLM) — v2.5 pure-pipe
+# BabelDOC Offline Translator (agent-as-LLM) — v2.6 pure-pipe
 
 Turn the agent into BabelDOC's translation API. No network calls, no API
 keys: a **collect** run dumps every prompt, the agent translates offline, a
 **replay** run serves the pre-translated text and writes the final PDFs.
 
-## v2.5 in one paragraph
+## v2.6 in one paragraph
 
 BabelDOC's own LLM path sends one prompt per batch (a JSON array of
-paragraphs) plus a single-paragraph fallback. v2.5 captures those prompts
+paragraphs) plus a single-paragraph fallback. v2.6 captures those prompts
 verbatim (`prompts.jsonl`), hands them to the agent, and the agent returns
 translations that keep every `<bN>` tag byte-for-byte. `pipe_merge.py` then
 builds `llm_outputs.json` directly from the agent's replies. There is **no**
@@ -121,7 +121,7 @@ Success: `[me] prompts=N ... unparsed=0`.
   arbitrarily changing the range archives instead, so stale out-of-range
   prompts cannot leak into the next merge.
 
-### 2. Translate offline — PURE-PIPE (recommended, v2.5)
+### 2. Translate offline — PURE-PIPE (recommended, v2.6)
 
 ```bash
 # 2a. split prompts into chunks for parallel subagents
