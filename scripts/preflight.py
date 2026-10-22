@@ -20,7 +20,12 @@ import os
 import sys
 from pathlib import Path
 
-import fitz
+try:
+    import fitz  # PyMuPDF
+except ImportError:  # pragma: no cover - depends on the environment
+    fitz = None
+
+FITZ_HINT = "PyMuPDF (fitz) is required for this scan: python -m pip install pymupdf"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -73,6 +78,9 @@ def _fmt_pages(pages: list[int]) -> str:
 
 
 def main() -> int:
+    if fitz is None:
+        print(f"ERROR: {FITZ_HINT}")
+        return 2
     if len(sys.argv) != 2:
         print(USAGE)
         return 2
@@ -138,8 +146,10 @@ def main() -> int:
             )
         if len(str(path)) > 200:
             print(
-                "RECOMMEND: input path is very long - copy the PDF to a short"
-                " ASCII filename first (Windows MAX_PATH)"
+                "RECOMMEND: input path is very long - collect/replay now run"
+                " via a short temp copy and restore outputs automatically"
+                " (Windows MAX_PATH); a short ASCII copy is still safer for"
+                " extreme paths"
             )
         if sys.platform == "win32":
             print(

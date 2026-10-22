@@ -47,23 +47,34 @@ babeldoc runs (`babeldoc` CLI with `--openai` etc. works fine as-is).
   (`bitstring>=5` breaks babeldoc — pin it). `tiktoken` required only by the
   optional v2.0 source-keyed path (`build_outputs.py`); the pure-pipe path
   needs neither tiktoken nor `export_texts.py`.
+- `preflight.py` and `render_check.py` need PyMuPDF (`pip install pymupdf`;
+  babeldoc usually installs it). They exit 2 with an install hint when `fitz`
+  is unavailable; the collect/translate/replay path does not need it.
 - On Windows set `PYTHONUTF8=1` in the session before running anything
   (prints include CJK source text; cp936 consoles crash otherwise).
 - Scripts live in `<skill>/scripts/`: `me_translator.py`, `run_translation.py`
-  (collect/replay core), `pipe_prep.py`, `pipe_merge.py` (pure-pipe), plus the
-  retained v2.0 helpers `export_texts.py`, `build_outputs.py`,
-  `preflight.py`, `render_check.py`, `split_work.py`.
+  (collect/replay core), `pipe_prep.py`, `pipe_merge.py`, `replay_precheck.py`
+  (pure-pipe), `pipe_status.py` (coverage/ETA), `selftest.py` (offline checks),
+  the PDF utilities `preflight.py` / `render_check.py`, and the retained v2.0
+  helpers `export_texts.py`, `build_outputs.py`, `split_work.py`.
 
 ## File contract (work dir `./me_work`, override with `ME_WORK_DIR`)
 
 | File | Shape | Written by |
 |---|---|---|
 | `prompts.jsonl` | one record per prompt: `{"kind","key","prompt"\|"source"}` | collect |
-| `run_stamp.json` | `{pages, sha256, input, lang_out}` | collect |
-| `chunk_N.json` | `{"chunk","instruction","records":[...]}` for subagents | `pipe_prep.py` |
+| `run_stamp.json` | `{pages, sha256, input, lang_in, lang_out}` | collect |
+| `chunk_N.json` | `{"chunk","instruction","output","keys","records":[...]}` for subagents | `pipe_prep.py` |
 | `llm_chunk_N.json` | `{"<key>": <value>}` — one per subagent | subagent |
 | `llm_outputs.json` | keyed `b:`/`s:` map (batch value = JSON string) | `pipe_merge.py` |
-| `fallback_outputs.json` | keyed by sha(source) | `pipe_merge.py` (reused) |
+| `text_index.json` | `{sha256(source text): translation}` — exact-text reuse | `pipe_merge.py` |
+| `coverage_missing.jsonl` | text-addressed gaps `{"key":"t:..","kind":"text","source"}` | `pipe_merge.py` |
+| `retry.jsonl` | segments still defective (tag/id/empty/gap; text-addressed) | `pipe_merge.py` |
+| `coverage_report.json` | coverage counts + problems (machine-readable) | `pipe_merge.py` |
+| `content_warnings.jsonl` | suspected untranslated / too short / too long segments | `pipe_merge.py` |
+| `glossary_warnings.jsonl` | glossary term in source but missing from the output (advisory) | `pipe_merge.py` |
+| `fallback_outputs.json` | `{sha256(source): translation}` for **every** known text; covers the plain path | `pipe_merge.py` |
+| `glossary.json` | optional `{"source term": "target term"}`; injected per chunk | user / `pipe_prep.py --glossary` |
 | `src_texts.json` / `zh_texts.json` / `zh_slice_*.json` | v2.0 source-keyed path only | v2.0 helpers |
 
 Translations are keyed by BabelDOC's own cache keys, never by list index —
@@ -72,7 +83,7 @@ misalignment is structurally impossible.
 ## Workflow (strict order)
 
 Run everything from ONE working directory. `collect` and `replay` must use the
-same PDF content, page range, and target language (enforced by
+same PDF content, page range, and source/target languages (enforced by
 `run_stamp.json`).
 
 ### 0. Preflight
@@ -84,8 +95,11 @@ python <skill>/scripts/preflight.py <input.pdf>
 
 Read the report first: zero-text pages (won't translate), image-dominant
 pages (`ME_OCR_WORKAROUND=1` needed if collect raises ScannedPDFError), long
-path warning (copy PDF to a short ASCII name — Windows MAX_PATH), babeldoc
-version warning. Also copy the PDF to a short name proactively when warned.
+path warning, babeldoc version warning. Long input paths are handled
+automatically: collect/replay copy the PDF to `%TEMP%\me_short\<sha8>\`, run
+with short input/output/working dirs, then copy the rendered PDFs back to
+`out_<mode>/`. A short copy of the PDF is still a good precaution for extreme
+paths.
 
 ### 1. Collect
 
@@ -96,39 +110,131 @@ python <skill>/scripts/run_translation.py collect <input.pdf> [page_range]
 Success: `[me] prompts=N ... unparsed=0`.
 - `prompts=0` → wrong range / image-only PDF: investigate before proceeding.
 - `ScannedPDFError` → rerun with `ME_OCR_WORKAROUND=1` (collect AND replay).
-- Re-collect on a **different** PDF automatically archives the previous run's
-  artifacts to `me_work/archive/<hash>_<ts>/` and starts clean.
-- Re-collect on the **same** PDF (e.g. extended page range) appends —
-  earlier prompts are kept (incremental).
+- Re-collect on a **different** PDF, a different `ME_LANG_IN`/`ME_LANG_OUT`, or
+  a page range that is not a strict extension automatically archives the
+  previous run's artifacts (prompts, outputs, indexes, chunks, retry/coverage
+  reports, chunk metadata, and `out_collect`/`out_replay`) to
+  `me_work/archive/<hash>_<ts>/` and starts clean.
+- Re-collect on the **same** PDF with the same languages and an unchanged or
+  extended page range appends — earlier prompts are kept (incremental), and
+  prompt/fallback keys already in the logs are not written twice. Shrinking or
+  arbitrarily changing the range archives instead, so stale out-of-range
+  prompts cannot leak into the next merge.
 
 ### 2. Translate offline — PURE-PIPE (recommended, v2.5)
 
 ```bash
-# 2a. split prompts into N chunks for parallel subagents
-python <skill>/scripts/pipe_prep.py --chunks 8 [--seed me_work/zh_texts.json]
+# 2a. split prompts into chunks for parallel subagents
+python <skill>/scripts/pipe_prep.py --chunks 8 [--max-chars 32000] [--seed me_work/zh_texts.json]
+#     optional terminology: --glossary me_work/glossary.json (auto-detected if present)
+#     --no-glossary disables auto-detection
+#     incremental by default: covered sources are skipped; --all re-chunks everything
 # 2b. hand each me_work/chunk_N.json to one parallel subagent.
-#     Each subagent follows the embedded instruction and writes
-#     me_work/llm_chunk_N.json = {"<key>": <value>}.
-# 2c. merge all replies + validate <bN> tag integrity
+#     Each chunk names its own output file (`output` field) and expected keys;
+#     the subagent writes {"<key>": <value>} there and replies with one line.
+# 2c. merge all replies + validate tags/ids + close coverage gaps
 python <skill>/scripts/pipe_merge.py
 ```
+
+`--chunks` is a **target**, `--max-chars` a **hard cap** (default 32000).
+Chunks are packed by source characters, not record count: batch records range
+from a few hundred bytes to several KB, and equal-count chunks of a 400-page
+book can exceed 300 KB each and time out. The script prints actual chunk sizes;
+if a single record exceeds the cap it is kept whole with a warning (records are
+never split across files — one batch key is answered once).
+
+Prep is **incremental by default**: a single is skipped when its exact source
+already has a non-empty translation in `text_index.json`; a batch is skipped
+only when every item is covered. `--all` forces a full re-chunk. This is how a
+re-run after an extended collect or a quality pass avoids paying twice.
 
 **Subagent contract** (also embedded in every chunk file):
 - `batch` record: translate each `items[].input` to Chinese, keep every
   `<bN>` tag byte-for-byte (same sequence, same relative position), return
   `value` = `[{"id": N, "output": "<zh with <bN>>"}, ...]` — a JSON array
-  with ids unchanged.
-- `single` record: translate `source` to Chinese, keep `<bN>` tags, return
-  `value` = the plain zh string.
+  with **every** id, unchanged.
+- `single` record: translate `source`, keep `<bN>` tags, return `value` = the
+  plain string.
 - Never invent keys — each record already carries its exact key.
+- Write the file named by the chunk's `output` field **before** replying; do
+  not echo translations into chat.
+
+**Glossary (optional).** If `<work>/glossary.json` exists (or `--glossary PATH`),
+prep injects only the terms that actually occur in each chunk — word-boundary,
+case-insensitive, longest/most frequent first, max 60 per chunk — as an extra
+numbered rule in that chunk's instruction. It never touches `prompts.jsonl` or
+the keys, so BabelDOC's batching/layout are unchanged and a run without a
+glossary behaves identically. The run prints how many terms were injected into
+how many chunks; `--no-glossary` ignores the file.
 - `--seed` (optional, re-runs only): attaches a prior `zh_texts.json` entry as
   a quality reference; the agent must still re-place tags per the rules.
 
-`pipe_merge.py` prints `merged keys`, `TAG-SEQUENCE PROBLEMS: 0`, and writes
-`llm_outputs.json` (it also reuses single translations to seed
-`fallback_outputs.json` for the plain do_translate path). If
-`TAG-SEQUENCE PROBLEMS > 0`, fix those records' translations and re-merge —
-do **not** hand-edit tags.
+`pipe_merge.py` prints key/text coverage, `TAG-SEQUENCE PROBLEMS`, and
+`COVERAGE GAPS`, then writes `llm_outputs.json` + `text_index.json` +
+`fallback_outputs.json`. It exits `3` when anything is incomplete (missing ids,
+empty translations, tag damage, retry values whose tags are invalid,
+conflicting duplicate keys, or real coverage gaps) — a non-zero exit means
+**do not replay yet**.
+
+It also runs content-level checks that tags cannot catch and prints
+`CONTENT WARNINGS` (written to `content_warnings.jsonl`): a segment identical to
+its source (more than 10 words), no target-script characters in a long segment,
+or a target text under 10% / over 4x the source length. Only prose is judged
+(≥6 lowercase words after tag removal), so formulas, names, city lists and
+bibliography entries are skipped. These are advisory (replay never sees them)
+unless you pass `--strict`, which makes them exit 3. Review the file; a real hit
+means that paragraph would otherwise ship in English.
+
+When `<work>/glossary.json` (or `--glossary PATH`) is present, merge also checks
+adherence: a source segment containing a glossary term must contain its target
+term. Misses are printed as `GLOSSARY WARNINGS` and written to
+`glossary_warnings.jsonl`. This is advisory (never blocks replay);
+`--no-glossary` skips the check.
+
+Coverage gaps are text-level, not key-level: the same paragraph can appear
+under a `b:` key and several `s:` keys, and BabelDOC's batch keys are not
+stable across runs. Merge reuses a translation whenever the **source text is
+byte-identical** (tags included) and never re-maps tags. Remaining gaps are
+written to `coverage_missing.jsonl`; close them with:
+
+```bash
+python <skill>/scripts/pipe_prep.py --from-missing coverage_missing.jsonl
+# translate chunk_fix_*.json -> llm_chunk_fix_*.json, then merge again
+python <skill>/scripts/pipe_merge.py
+```
+
+If two chunk files translate the same key differently, merge fails by default;
+`--conflict last` keeps the newest file's value (use deliberately, e.g. after
+a retry round). The conflict report names the file actually kept and every file
+whose value was overwritten, including when a third file wins.
+`--allow-gaps` exists for debugging only.
+
+Whatever is still defective is also written to `retry.jsonl` with the exact
+source text and a reason (tag mismatch, empty/missing id, unusable value,
+coverage gap). `--retry-content` adds content warnings; `--import-missing` folds
+replay's `missing.jsonl` / `missing_fallback.jsonl` in. Close the loop without
+hand-editing chunk files:
+
+```bash
+python <skill>/scripts/pipe_prep.py --from-retry retry.jsonl
+# translate chunk_retry_*.json -> llm_chunk_retry_*.json
+python <skill>/scripts/pipe_merge.py
+```
+
+Retry values are text-addressed (`t:<sha>`) and **override** the previous bad
+value, including a single item inside a batch key. A retry value whose tag
+sequence does not match its source is never applied: merge prints
+`RETRY VALUES WITH BAD TAGS`, lists it in `retry.jsonl`, and exits 3 — even
+when the normal batch value is fine. When nothing is left,
+`retry.jsonl` is removed and merge exits 0. A retry/fix file loses to a normal
+`llm_chunk_*.json` that covers the same source and is newer (merge prints
+`ignored N stale text-fix value(s)` and reports `retry_ignored`), so a deliberate
+re-translation wins automatically. Regenerate the retry file after the normal
+chunk if the retry value should win instead.
+
+Run `python <skill>/scripts/selftest.py [--work <work>]` to verify the scripts
+end-to-end without a PDF (retry loop, warnings, incremental, preflight) and
+optionally audit a real work dir.
 
 ### 2-alt. Translate offline — source-keyed (v2.0, kept for small jobs / incremental)
 
@@ -147,15 +253,49 @@ prefer the pure-pipe path for new work.
 ### 3. Replay
 
 ```bash
-python <skill>/scripts/run_translation.py replay <input.pdf> [page_range]
+python <skill>/scripts/run_translation.py replay <input.pdf> [page_range] [--log-file replay.log]
 ```
 
-Refuses on any collect/replay mismatch (pages, PDF content sha, target
-language) — fix by re-running collect or replay with the collected values.
+Refuses on any collect/replay mismatch (pages, PDF content sha, source language,
+target language) — fix by re-running collect or replay with the collected
+values.
+
+Before loading the layout model, replay runs a **coverage preflight** over
+`prompts.jsonl` + `llm_outputs.json` + `text_index.json`:
+
+```
+[me] preflight: prompts=2852 keyed=2852 text-index=0 missing=0 (texts indexed=2504)
+```
+
+`missing > 0` aborts with exit 3 **before any rendering**, listing the affected
+keys and source snippets and the merge/`--from-missing` commands to close them.
+The same check covers BabelDOC's plain `do_translate` path: sources recorded in
+`fallback_src.jsonl` must resolve in `fallback_outputs.json` or `text_index.json`
+(the report adds a `plain-path sources=... uncovered=...` line when any exist).
+`--allow-misses` replays anyway; `--precheck-only` only reports (adding
+`--allow-misses --precheck-only` gives a clean exit 0 after inspection). This
+predicts keys that existed at collect time; keys the engine invents during
+replay are still served by the runtime exact-text fallback and reported in
+`missing.jsonl`.
+
 Success: `Successful: N, Fallback: 0`, `missing_llm=0 missing_fb=0
-unparsed=0`, exit 0. Missing > 0 → inspect `missing.jsonl`, translate the
-new sources, re-merge (`pipe_merge.py`) or rebuild, replay again (stale miss
-logs are cleared at start).
+unparsed=0`, exit 0. `text_fallback=N` counts segments served from
+`text_index.json` because their key did not exist at collect time; that is
+normal and does not mean anything is missing.
+
+`--log-file PATH` mirrors the console (including BabelDOC's own logs) into a
+UTF-8 file; a relative path is resolved inside the work dir. On Windows this
+avoids codepage loss and preserves a record of long runs.
+
+Before a long run, `python <skill>/scripts/pipe_status.py --work <work>` reports
+prompts/coverage, unanswered chunks, and estimates replay/collect time and peak
+memory from the page count (coefficients measured on a 429-page book, ±25%).
+
+If `missing_llm > 0`, inspect `missing.jsonl`: those keys were generated by
+the engine itself and are not in `prompts.jsonl`, but their source text is.
+Translate the text, not the key — re-run `pipe_merge.py` to refresh
+`coverage_missing.jsonl`, translate it via `pipe_prep.py --from-missing`,
+merge, and replay. (Stale miss logs are cleared at the start of each replay.)
 
 ### 4. Deliver + visual check
 
@@ -163,12 +303,16 @@ Outputs: `me_work/out_replay/<stem>.no_watermark.<lang>.mono.pdf` and
 `.dual.pdf`. Copy to the user's requested destination. Spot-check with:
 
 ```bash
-python <skill>/scripts/render_check.py <output.pdf> auto
+python <skill>/scripts/render_check.py <output.pdf> auto [--auto-count 6]
 ```
 
-then view the printed PNGs: translation present, no bleed-through English,
-margins/page numbers intact, paragraphs spanning page/column breaks coherent.
-Pages with no text layer (covers) stay English — tell the user.
+`auto` is text-aware: it skips pages with <200 characters (covers, blanks,
+part-title separators), samples the remaining pages evenly across the book,
+and adds up to two pages that start mid-sentence (cross-page paragraph merges —
+where layout damage is most likely). Use explicit page numbers for a targeted
+re-check. Then view the printed PNGs: translation present, no bleed-through
+English, margins/page numbers intact, paragraphs spanning page/column breaks
+coherent. Pages with no text layer (covers) stay English — tell the user.
 
 ## Failure quick-reference
 
@@ -177,12 +321,19 @@ See `references/contract.md` (prompt/key formats, engine validation) and
 
 ## Key invariants — never break these
 
-- collect and replay: same PDF content + page range + `ME_LANG_OUT`
-  (enforced via `run_stamp.json`; a mismatched replay exits 2 before doing
-  any work).
+- collect and replay: same PDF content + page range + `ME_LANG_IN` +
+  `ME_LANG_OUT` (enforced via `run_stamp.json`; a mismatched replay exits 2
+  before doing any work). Changing either language on collect archives the old
+  run instead of silently reusing its translations.
 - Never edit `prompts.jsonl` after collect — it is the key source.
 - `<bN>` tags are preserved by the agent **byte-for-byte**; no re-injection
   script is used or needed.
+- A translation may be reused across keys only when the **source text is
+  byte-identical** (all `<bN>` tags included). Near-matches are reported as
+  gaps, never guessed — tag renumbering is how formulas get corrupted.
+- A green merge (exit 0) plus `missing_llm=0` means every source text in the
+  document hit a translation; a green replay alone is not sufficient if merge
+  reported gaps.
 - `me_translator.py`'s `do_llm_translate(None)` probe must keep returning
   normally — any exception silently disables the whole LLM path.
 - Green replay (`missing=0`, exit 0) means every prompt hit the mapping.
@@ -190,5 +341,6 @@ See `references/contract.md` (prompt/key formats, engine validation) and
 ## Language pairs
 
 Defaults `en→zh`. Set `ME_LANG_IN` / `ME_LANG_OUT` (e.g. `ja`, `en`) for
-other directions; `ME_LANG_OUT` must match between collect and replay
-(enforced). Output filenames use the target language suffix automatically.
+other directions; both must match between collect and replay (enforced), and
+changing either on a re-collect archives the previous language's work instead
+of reusing it. Output filenames use the target language suffix automatically.

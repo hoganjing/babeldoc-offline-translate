@@ -41,6 +41,35 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _load_seen_keys(filename: str) -> set[str]:
+    """Keys already recorded in a work-dir JSONL log.
+
+    A collect process appends to prompts.jsonl / fallback_src.jsonl. Preloading
+    the keys written by an earlier collect of the same work dir keeps a
+    re-run (for example an extended page range) from duplicating records.
+    """
+    path = WORK_DIR / filename
+    if not path.exists():
+        return set()
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return set()
+    seen: set[str] = set()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        key = record.get("key") if isinstance(record, dict) else None
+        if isinstance(key, str) and key:
+            seen.add(key)
+    return seen
+
+
 def _extract_json_input(prompt: str) -> tuple[str, list]:
     """Return (canonical_json_str, parsed_list) of the batch payload.
 
@@ -99,12 +128,21 @@ class MeTranslator(BaseTranslator):
         self.mode = MODE
         WORK_DIR.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._seen_prompt_keys: set[str] = set()
-        self._seen_fb_srcs: set[str] = set()
+        # Collect appends to the logs; preload existing keys so a repeated
+        # collect of the same work dir does not duplicate records.
+        if self.mode == "collect":
+            self._seen_prompt_keys: set[str] = _load_seen_keys("prompts.jsonl")
+            self._seen_fb_srcs: set[str] = _load_seen_keys("fallback_src.jsonl")
+        else:
+            self._seen_prompt_keys = set()
+            self._seen_fb_srcs = set()
         self._llm_outputs: dict[str, str] | None = None
         self._fb_outputs: dict[str, str] | None = None
+        self._text_index: dict[str, str] | None = None
+        self._text_index_enabled = os.environ.get("ME_TEXT_FALLBACK", "1") != "0"
         self.missing_llm_count = 0
         self.missing_fb_count = 0
+        self.text_fallback_count = 0
 
     # ---------------- file helpers ----------------
 
@@ -118,7 +156,40 @@ class MeTranslator(BaseTranslator):
         path = WORK_DIR / filename
         if not path.exists():
             return {}
-        return json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except ValueError as exc:
+            raise RuntimeError(f"cannot parse {path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{path} must contain a JSON object")
+        return data
+
+    # ---------------- text-keyed fallback ----------------
+    #
+    # BabelDOC keys a batch by the canonical json payload, so the same paragraph
+    # can be requested under a new b: key when batch composition changes, or as
+    # an s: key on a later run. llm_outputs.json alone cannot cover those. The
+    # text index (written by pipe_merge.py) maps sha256(source text) -> the
+    # translation of that EXACT text; it is only consulted after a key miss and
+    # only exact byte matches are served, so <bN> tags can never be re-mapped.
+
+    def _text_lookup(self, text: str) -> str | None:
+        if not self._text_index_enabled:
+            return None
+        if self._text_index is None:
+            with self._lock:
+                if self._text_index is None:
+                    self._text_index = self._load_json_map("text_index.json")
+        return self._text_index.get(_sha(text))
+
+    def _batch_text_fallback(self, parsed: list) -> str | None:
+        fallback = []
+        for item in parsed:
+            hit = self._text_lookup(item.get("input", ""))
+            if hit is None:
+                return None
+            fallback.append({"id": item["id"], "output": hit})
+        return json.dumps(fallback, ensure_ascii=False)
 
     # ---------------- LLM batch path ----------------
 
@@ -134,12 +205,13 @@ class MeTranslator(BaseTranslator):
             key = "b:" + _sha(canonical)
             collect_payload = _echo(parsed)
             record = {"kind": "batch", "key": key, "prompt": text}
+            single_source = None
         elif SINGLE_MARKER in text:
-            source = _extract_single_source(text)
-            key = "s:" + _sha(source)
+            single_source = _extract_single_source(text)
+            key = "s:" + _sha(single_source)
             # Single path expects the plain translated text back, not JSON.
-            collect_payload = source
-            record = {"kind": "single", "key": key, "source": source}
+            collect_payload = single_source
+            record = {"kind": "single", "key": key, "source": single_source}
         else:
             # Unknown shape: record it, let the engine handle the failure.
             self._append_jsonl("unparsed.jsonl", {"prompt": text})
@@ -159,6 +231,18 @@ class MeTranslator(BaseTranslator):
         output = self._llm_outputs.get(key)
         if output is not None:
             return output
+
+        # Key miss: serve the translation of the identical source text, if any.
+        # Same input text in, same output text out -- nothing is re-mapped.
+        if single_source is None:
+            fallback = self._batch_text_fallback(parsed)
+        else:
+            fallback = self._text_lookup(single_source)
+        if fallback is not None:
+            with self._lock:
+                self.text_fallback_count += 1
+            return fallback
+
         with self._lock:
             self.missing_llm_count += 1
         self._append_jsonl("missing.jsonl", {"key": key, **record})
@@ -181,6 +265,15 @@ class MeTranslator(BaseTranslator):
         if self._fb_outputs is None:
             self._fb_outputs = self._load_json_map("fallback_outputs.json")
         output = self._fb_outputs.get(_sha(text))
+        if output is None:
+            # The engine can fire the plain path for a key that never reached
+            # fallback_outputs.json (or when merge has not backfilled it yet).
+            # The text index is keyed by the identical sha256(source), so an
+            # exact match is safe to serve here too.
+            output = self._text_lookup(text)
+            if output is not None:
+                with self._lock:
+                    self.text_fallback_count += 1
         if output is not None:
             return output
         with self._lock:
