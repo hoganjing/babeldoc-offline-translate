@@ -437,10 +437,21 @@ def main() -> int:
         if prev is None:
             print(f"[me] ERROR: no collect run found ({STAMP} missing).")
             return 2
+        # If no page range was passed, default to the range collect recorded,
+        # so a replay invoked without an explicit range can never mismatch on
+        # pages (collect may have recorded an explicit range like "1-910").
+        if pages is None:
+            pages = prev.get("pages") or ""
+            print(
+                f"[me] replay: no page range passed - using collected range "
+                f"'{pages or 'ALL'}'"
+            )
+            fp = _fingerprint(pdf, pages, lang_in, lang_out)
         mismatches = []
-        if prev.get("pages") != fp["pages"]:
+        prev_pages = prev.get("pages") or ""
+        if prev_pages != fp["pages"]:
             mismatches.append(
-                f"page range: collect={prev.get('pages') or 'ALL'} "
+                f"page range: collect={prev_pages or 'ALL'} "
                 f"replay={fp['pages'] or 'ALL'}"
             )
         if prev.get("sha256") != fp["sha256"]:

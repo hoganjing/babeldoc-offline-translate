@@ -117,7 +117,7 @@ Written after a successful collect:
   `cross_page` / `cross_column` / `page` groups — audit how many segments
   were merged across page/column breaks.
 
-## Pure-pipe flow (v2.5) — no source-keyed intermediate
+## Pure-pipe flow (v2.6) — no source-keyed intermediate
 
 `prompts.jsonl` is the single source of truth. The agent translates it
 directly instead of going through `zh_texts.json` / `build_outputs.py`:

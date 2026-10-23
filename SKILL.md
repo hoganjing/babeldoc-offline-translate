@@ -15,6 +15,9 @@ description: >-
 
 # BabelDOC Offline Translator (agent-as-LLM) — v2.6 pure-pipe
 
+> **Version: v2.6** (pure-pipe). The authoritative version history lives in
+> `CHANGELOG.md` — keep this line, the title, and that file in sync.
+
 Turn the agent into BabelDOC's translation API. No network calls, no API
 keys: a **collect** run dumps every prompt, the agent translates offline, a
 **replay** run serves the pre-translated text and writes the final PDFs.
@@ -53,10 +56,19 @@ babeldoc runs (`babeldoc` CLI with `--openai` etc. works fine as-is).
 - On Windows set `PYTHONUTF8=1` in the session before running anything
   (prints include CJK source text; cp936 consoles crash otherwise).
 - Scripts live in `<skill>/scripts/`: `me_translator.py`, `run_translation.py`
-  (collect/replay core), `pipe_prep.py`, `pipe_merge.py`, `replay_precheck.py`
-  (pure-pipe), `pipe_status.py` (coverage/ETA), `selftest.py` (offline checks),
+  (collect/replay core), `pipe_prep.py`, `pipe_merge.py`, `pipe_validate.py`
+  (pre-merge per-chunk gate), `replay_precheck.py` (pure-pipe),
+  `pipe_status.py` (coverage/ETA), `make_brief.py` (generate the per-book worker
+  brief from `templates/worker_brief.md`), `selftest.py` (offline checks),
   the PDF utilities `preflight.py` / `render_check.py`, and the retained v2.0
   helpers `export_texts.py`, `build_outputs.py`, `split_work.py`.
+
+> **Legacy v2.0 helpers are fallback-only.** `export_texts.py`, `build_outputs.py`,
+> `split_work.py`, and any project-local legacy tools such as `*reinject*.py`
+> belong to the *old* source-keyed workflow. The current pure-pipe (v2.6) path
+> (collect → pipe_prep → pipe_merge → replay) does **not** use them and must
+> **never** run tag-re-injection on pure-pipe output — that step was the root
+> cause of formula-tag corruption. Use them only to salvage pre-v2.6 corpora.
 
 ## File contract (work dir `./me_work`, override with `ME_WORK_DIR`)
 
@@ -129,12 +141,33 @@ python <skill>/scripts/pipe_prep.py --chunks 8 [--max-chars 32000] [--seed me_wo
 #     optional terminology: --glossary me_work/glossary.json (auto-detected if present)
 #     --no-glossary disables auto-detection
 #     incremental by default: covered sources are skipped; --all re-chunks everything
-# 2b. hand each me_work/chunk_N.json to one parallel subagent.
-#     Each chunk names its own output file (`output` field) and expected keys;
-#     the subagent writes {"<key>": <value>} there and replies with one line.
-# 2c. merge all replies + validate tags/ids + close coverage gaps
+# 2b. generate the per-book worker brief ONCE (template -> filled brief), then
+#     hand each me_work/chunk_N.json to one parallel subagent.
+python <skill>/scripts/make_brief.py --work me_work --book "<Title (Year)>" \
+    --meta "<authors>, <year>, <pages> pages, <domain>" \
+    --terms glossary_subset.txt   # optional: one 'src→tgt' per line
+#     The brief (me_work/WORKER_BRIEF.md) carries the iron rules + self-check;
+#     ship it to every subagent instead of hand-writing the rules per book.
+#     DISPATCH PROTOCOL (parallelism): ASK the user before dispatching — see the
+#     'Dispatch protocol' note below. If they decline, the main agent judges the
+#     concurrency on the fly (call as many as it sees fit, not forced serial).
+#     On 429 a subagent stops + reports; main agent waits for quota reset + resumes.
+# 2c. after every chunk is answered, run the per-chunk gate BEFORE merging:
+python <skill>/scripts/pipe_validate.py --work me_work
+#     exit 0 = all chunks present + clean (tags/ids/keys OK); exit 3 = do NOT merge.
+# 2d. merge all replies + validate tags/ids + close coverage gaps
 python <skill>/scripts/pipe_merge.py
 ```
+
+**Dispatch protocol (parallelism).** Before dispatching the chunk subagents,
+ask the user whether they want to control the parallel count. If they decline,
+the main agent judges the concurrency on the fly — call as many parallel
+subagents as it sees fit for the situation, not forced into a single serial
+worker. If they specify a number N, honor it (1 = fully serial, 3/5 = that
+many concurrent Agent dispatches). Regardless of the path, a subagent that hits
+a 429 / rate-limit must STOP and report the raw error verbatim; the main agent
+then pauses, waits for the quota to reset, and resumes dispatch — never retry
+blindly.
 
 `--chunks` is a **target**, `--max-chars` a **hard cap** (default 32000).
 Chunks are packed by source characters, not record count: batch records range
@@ -258,7 +291,11 @@ python <skill>/scripts/run_translation.py replay <input.pdf> [page_range] [--log
 
 Refuses on any collect/replay mismatch (pages, PDF content sha, source language,
 target language) — fix by re-running collect or replay with the collected
-values.
+values. `[page_range]` is now **optional**: when omitted, replay auto-uses the
+range recorded in `run_stamp.json` at collect time, so you can no longer trigger
+the 3-second "page range mismatch" abort by forgetting the range (this used to
+bite when collect recorded an explicit range like `1-910`). Passing it explicitly
+still works and must match collect.
 
 Before loading the layout model, replay runs a **coverage preflight** over
 `prompts.jsonl` + `llm_outputs.json` + `text_index.json`:

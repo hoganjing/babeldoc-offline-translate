@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Merge llm_chunk_*.json into llm_outputs.json, validate, and close coverage gaps.
 
-Pure-pipe flow (v2.5). Also reuses translations to seed fallback_outputs.json,
+Pure-pipe flow (v2.6). Also reuses translations to seed fallback_outputs.json,
 which covers babeldoc's plain do_translate path when it fires during replay.
 
 Why a text index

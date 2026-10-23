@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Split prompts.jsonl into translation chunks for parallel subagent dispatch.
 
-Pure-pipe flow (v2.5): the agent translates the EXACT text babeldoc would send
+Pure-pipe flow (v2.6): the agent translates the EXACT text babeldoc would send
 to its LLM; the responses are merged straight into llm_outputs.json -- no
 zh_texts / split_work / build_outputs / tag-reinjection intermediate. Because
 the <bN> tags live inside the source text the agent sees, they can only be
