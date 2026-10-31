@@ -201,10 +201,10 @@ def render_pages(
     """Render each page to <outdir>/<stem>_p<N>.png; return written paths."""
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+    src_hash = hashlib.sha1(str(pdf_path).encode("utf-8")).hexdigest()[:6]
     with fitz.open(pdf_path) as doc:
         for n in pages:
             pix = doc[n - 1].get_pixmap(dpi=dpi)
-            src_hash = hashlib.sha1(str(pdf_path).encode("utf-8")).hexdigest()[:6]
             out = out_dir / f"{pdf_path.stem}_{src_hash}_p{n}.png"
             pix.save(str(out))
             written.append(out.resolve())

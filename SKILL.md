@@ -3,7 +3,7 @@ name: babeldoc-offline-translate
 description: >-
   Offline collect→translate→replay pipeline that makes the agent itself the
   LLM translation backend for BabelDOC / pdf2zh PDF translation (layout
-  preserved, EN→ZH by default, any language pair via env). v2.8 ("pure-pipe" + skew-tolerant parse):
+  preserved, EN→ZH by default, any language pair via env). v2.8.1 ("pure-pipe" + skew-tolerant parse):
   feed BabelDOC's verbatim prompts straight to the agent, preserve <bN> tags
   byte-for-byte, merge responses directly into llm_outputs.json — no
   source-keyed intermediate and no tag re-injection step. Use when
@@ -13,9 +13,9 @@ description: >-
   run must serve pre-translated text through a custom BaseTranslator.
 ---
 
-# BabelDOC Offline Translator (agent-as-LLM) — v2.8 skew-tolerant
+# BabelDOC Offline Translator (agent-as-LLM) — v2.8.1 skew-tolerant
 
-> **Version: v2.8**. The authoritative version history lives in
+> **Version: v2.8.1**. The authoritative version history lives in
 > `CHANGELOG.md` — keep this line, the title, and that file in sync.
 
 Turn the agent into BabelDOC's translation API. No network calls, no API
@@ -108,7 +108,7 @@ python <skill>/scripts/preflight.py <input.pdf>
 Read the report first: zero-text pages (won't translate), image-dominant
 pages (`ME_OCR_WORKAROUND=1` needed if collect raises ScannedPDFError), long
 path warning, babeldoc version warning. Long input paths are handled
-automatically: collect/replay copy the PDF to `%TEMP%\me_short\<sha8>\`, run
+automatically: collect/replay copy the PDF to `%TEMP%\me_short\<sha16>\`, run
 with short input/output/working dirs, then copy the rendered PDFs back to
 `out_<mode>/`. A short copy of the PDF is still a good precaution for extreme
 paths.
@@ -166,7 +166,10 @@ python <skill>/scripts/make_brief.py --work me_work --book "<Title (Year)>" \
 #     On 429 a subagent stops + reports; main agent waits for quota reset + resumes.
 # 2c. after every chunk is answered, run the per-chunk gate BEFORE merging:
 python <skill>/scripts/pipe_validate.py --work me_work
-#     exit 0 = all chunks present + clean (tags/ids/keys OK); exit 3 = do NOT merge.
+#     exit 0 = all chunks present + clean (tags/ids/keys OK) -> safe to merge
+#     exit 2 = setup error: work dir missing or 0 chunk files (forgot pipe_prep,
+#              or --work points at the wrong dir) -> nothing to merge yet
+#     exit 3 = a chunk is missing or a record is broken -> do NOT merge
 # 2d. merge all replies + validate tags/ids + close coverage gaps
 python <skill>/scripts/pipe_merge.py
 ```

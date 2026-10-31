@@ -44,7 +44,7 @@ Environment switches:
                        is rotated >0.1° from the axes; warped scans carry
                        ±0.5° OCR skew, losing whole paragraphs. Default 5
                        (snap near-horizontal chars to 0°, near-vertical to
-                       ±90°). Set 0 to restore babeldoc's native filter.
+                       +90°). Set 0 to restore babeldoc's native filter.
 """
 
 from __future__ import annotations
@@ -336,7 +336,7 @@ def _apply_skew_tolerance():
     warped paper carry per-line OCR matrices skewed by ±0.5° or more, so whole
     paragraphs (mostly near page tops/bottoms) vanish before translation and
     replay renders the raw English image. We snap near-horizontal matrices to
-    exactly 0° (and near-vertical to ±90°) within a configurable tolerance;
+    exactly 0° (and near-vertical to +90°) within a configurable tolerance;
     genuinely rotated text keeps its angle.
 
     ME_SKEW_TOLERANCE_DEG sets the band in degrees (default 5, "0" disables).
@@ -353,14 +353,15 @@ def _apply_skew_tolerance():
     try:
         import babeldoc.format.pdf.document_il.frontend.il_creater as _ilc
         import babeldoc.format.pdf.document_il.frontend.il_creater_active as _ilca
-    except ImportError as exc:
+        orig = _ilc.get_rotation_angle
+    except (ImportError, AttributeError) as exc:
+        # babeldoc renamed/removed the module OR the helper: degrade to the
+        # native filter with a warning instead of dying at startup.
         print(
-            f"[me] WARNING: cannot import babeldoc rotation modules ({exc}); "
+            f"[me] WARNING: babeldoc rotation hook unavailable ({exc}); "
             f"skew tolerance disabled, falling back to native filter"
         )
         return
-
-    orig = _ilc.get_rotation_angle
 
     def _tolerant_rotation_angle(matrix):
         deg = orig(matrix)
@@ -377,7 +378,7 @@ def _apply_skew_tolerance():
     # il_creater_active binds the name via `from ... import`, so patch both.
     _ilc.get_rotation_angle = _tolerant_rotation_angle
     _ilca.get_rotation_angle = _tolerant_rotation_angle
-    print(f"[me] skew tolerance active: ±{tol}° (chars snap to 0°/±90°)")
+    print(f"[me] skew tolerance active: ±{tol}° (chars snap to 0°/+90°)")
 
 
 def _restore_outputs(src_dir: Path, dest_dir: Path) -> int:

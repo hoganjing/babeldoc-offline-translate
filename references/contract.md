@@ -94,7 +94,7 @@ Written after a successful collect:
   so only new sources need translating.
 - Title-hint blocks vary between runs but never enter the keys.
 - Windows: when the input path is within 120 characters of MAX_PATH, the driver
-  copies the PDF to `%TEMP%\me_short\<sha8>\<stem>.pdf`, runs with short
+  copies the PDF to `%TEMP%\me_short\<sha16>\<stem>.pdf`, runs with short
   input/output/working dirs, then copies the rendered PDFs back to
   `out_<mode>/`. The stamp still records the original path and content sha, so
   collect/replay parity is unchanged.
@@ -117,7 +117,7 @@ Written after a successful collect:
   `cross_page` / `cross_column` / `page` groups — audit how many segments
   were merged across page/column breaks.
 
-## Pure-pipe flow (v2.8) — no source-keyed intermediate
+## Pure-pipe flow (v2.8.1) — no source-keyed intermediate
 
 `prompts.jsonl` is the single source of truth. The agent translates it
 directly instead of going through `zh_texts.json` / `build_outputs.py`:

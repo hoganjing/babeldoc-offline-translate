@@ -1,12 +1,31 @@
 # Changelog — babeldoc-offline-translate
 
-**Current version: v2.8**. This file is the authoritative version
-history. The SKILL.md title, the "Version: v2.8" pointer near the top of
+**Current version: v2.8.1**. This file is the authoritative version
+history. The SKILL.md title, the "Version: v2.8.1" pointer near the top of
 SKILL.md, and the `Pure-pipe flow (v2.N)` docstrings in `scripts/` /
 `references/contract.md` must all match the latest entry below. If you bump the
 version, update all four in one commit.
 
-## v2.8 — offline throughput + robustness hardening (current)
+## v2.8.1 — doc/code sync fixes (current)
+
+- **Docs: `<sha8>` -> `<sha16>`** in `SKILL.md`, `references/contract.md` and
+  `references/troubleshooting.md`. v2.8 changed the temp-dir key to
+  `digest[:16]`, but the docs still described 8 hex chars, so anyone debugging
+  `%TEMP%\me_short\` would look for a directory name that no longer exists.
+- **Docs: `pipe_validate.py` exit codes** (SKILL.md step 2c) now list exit 2
+  (work dir missing / 0 chunks) next to exit 0 and exit 3. The new gate added in
+  v2.8 was invisible in the workflow docs.
+- **`render_check.py`**: `sha1(pdf_path)[:6]` is computed once before the page
+  loop instead of once per page.
+- **`run_translation.py` skew patch**: the hook lookup now also catches
+  `AttributeError`, and `orig = _ilc.get_rotation_angle` moved inside the
+  `try`. A babeldoc that keeps the modules but renames the helper now degrades
+  to the native filter with a warning instead of crashing at startup.
+- **`run_translation.py` wording**: "near-vertical to ±90°" -> "+90°" in the
+  env docstring, the patch docstring and the runtime banner. The negative branch
+  was removed in v2.8, so the old text promised a rescue that cannot happen.
+
+## v2.8 — offline throughput + robustness hardening
 
 - **Decouple rate limiter from worker pool** (`run_translation.py`): the offline
   translator reads local JSON and never hits a remote API, yet babeldoc's global
