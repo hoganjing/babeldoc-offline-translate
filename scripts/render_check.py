@@ -29,6 +29,7 @@ PDF, or invalid page numbers.
 from __future__ import annotations
 
 import sys
+import hashlib
 from pathlib import Path
 
 try:
@@ -203,7 +204,8 @@ def render_pages(
     with fitz.open(pdf_path) as doc:
         for n in pages:
             pix = doc[n - 1].get_pixmap(dpi=dpi)
-            out = out_dir / f"{pdf_path.stem}_p{n}.png"
+            src_hash = hashlib.sha1(str(pdf_path).encode("utf-8")).hexdigest()[:6]
+            out = out_dir / f"{pdf_path.stem}_{src_hash}_p{n}.png"
             pix.save(str(out))
             written.append(out.resolve())
     return written

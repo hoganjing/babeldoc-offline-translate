@@ -40,6 +40,11 @@ Environment switches:
                        Also implied by ScannedPDFError on collect.
   ME_LANG_IN / ME_LANG_OUT   source/target language (default en / zh).
                        Must match between collect and replay (enforced).
+  ME_SKEW_TOLERANCE_DEG      babeldoc silently drops chars whose text matrix
+                       is rotated >0.1° from the axes; warped scans carry
+                       ±0.5° OCR skew, losing whole paragraphs. Default 5
+                       (snap near-horizontal chars to 0°, near-vertical to
+                       ±90°). Set 0 to restore babeldoc's native filter.
 """
 
 from __future__ import annotations
@@ -304,7 +309,11 @@ def _short_run(pdf: str, digest: str, mode: str):
     if os.name != "nt":
         return None
     stem = _safe_stem(Path(pdf).stem)
-    base = Path(tempfile.gettempdir()) / "me_short" / digest[:8]
+    # Keep digest short: _short_run exists to dodge the Windows 260-char path
+    # limit, and the (uncontrolled-length) book title is also mirrored into the
+    # path. 16 hex chars (64-bit) give negligible collision odds while adding
+    # only 8 chars vs the old [:8]; a full digest would re-introduce the limit.
+    base = Path(tempfile.gettempdir()) / "me_short" / digest[:16]
     short_pdf = base / f"{stem}.pdf"
     try:
         base.mkdir(parents=True, exist_ok=True)
@@ -317,6 +326,58 @@ def _short_run(pdf: str, digest: str, mode: str):
         print(f"[me] WARNING: short-path copy failed ({exc}); using original path")
         return None
     return str(short_pdf), base / f"out_{mode}", base / f"working_{mode}"
+
+
+def _apply_skew_tolerance():
+    """Relax babeldoc's char-rotation filter so skewed OCR lines are not dropped.
+
+    babeldoc's il_creater silently discards any character whose text matrix is
+    rotated more than 0.1° from the horizontal/vertical axes. Scanned books with
+    warped paper carry per-line OCR matrices skewed by ±0.5° or more, so whole
+    paragraphs (mostly near page tops/bottoms) vanish before translation and
+    replay renders the raw English image. We snap near-horizontal matrices to
+    exactly 0° (and near-vertical to ±90°) within a configurable tolerance;
+    genuinely rotated text keeps its angle.
+
+    ME_SKEW_TOLERANCE_DEG sets the band in degrees (default 5, "0" disables).
+    """
+    tol_raw = os.environ.get("ME_SKEW_TOLERANCE_DEG", "5")
+    try:
+        tol = float(tol_raw)
+    except ValueError:
+        print(f"[me] WARNING: bad ME_SKEW_TOLERANCE_DEG={tol_raw!r}; disabling")
+        tol = 0.0
+    if tol <= 0:
+        return
+
+    try:
+        import babeldoc.format.pdf.document_il.frontend.il_creater as _ilc
+        import babeldoc.format.pdf.document_il.frontend.il_creater_active as _ilca
+    except ImportError as exc:
+        print(
+            f"[me] WARNING: cannot import babeldoc rotation modules ({exc}); "
+            f"skew tolerance disabled, falling back to native filter"
+        )
+        return
+
+    orig = _ilc.get_rotation_angle
+
+    def _tolerant_rotation_angle(matrix):
+        deg = orig(matrix)
+        if -tol <= deg <= tol:
+            return 0.0
+        if 90 - tol <= deg <= 90 + tol:
+            return 90.0
+        # NOTE: babeldoc's on_lt_char only accepts the +90 window
+        # (89.9..90.1); a -90° glyph snapped to -90.0 is still dropped
+        # there. Rescuing negative-vertical text needs on_lt_char patched
+        # too, which is out of scope for this lightweight fix.
+        return deg
+
+    # il_creater_active binds the name via `from ... import`, so patch both.
+    _ilc.get_rotation_angle = _tolerant_rotation_angle
+    _ilca.get_rotation_angle = _tolerant_rotation_angle
+    print(f"[me] skew tolerance active: ±{tol}° (chars snap to 0°/±90°)")
 
 
 def _restore_outputs(src_dir: Path, dest_dir: Path) -> int:
@@ -547,10 +608,23 @@ def main() -> int:
     )
     from babeldoc.translator.translator import set_translate_rate_limiter
 
+    _apply_skew_tolerance()
+
     from me_translator import MeTranslator
 
-    qps = 8
-    set_translate_rate_limiter(qps)
+    # --- throughput vs rate limiting are two separate knobs ---
+    # This skill is OFFLINE: MeTranslator reads local JSON, there is no real API
+    # to respect. babeldoc's global rate limiter sleeps on EVERY translate()
+    # call, and MeTranslator passes ignore_cache=True so its cache fast-path is
+    # skipped -- left at the default it would throttle us to qps calls/sec and
+    # waste minutes of real wall-clock time. babeldoc has no "off" setting
+    # (set_max_qps(0) raises ValueError), so we set it very high to make it a
+    # no-op. pool_max_workers is a separate, bounded constant and must NOT track
+    # qps: TranslationConfig defaults pool_max_workers to qps, so coupling them
+    # (the old "qps=qps, pool_max_workers=qps") means a future qps tweak also
+    # resizes the thread pool, and a large qps would spawn that many threads.
+    POOL_MAX_WORKERS = 8                        # parallel translate() workers
+    set_translate_rate_limiter(1000)             # offline ~= off (no 0 setting)
 
     print("[me] loading layout model (first run downloads assets)...")
     doc_layout_model = DocLayoutModel.load_available()
@@ -577,8 +651,8 @@ def main() -> int:
         auto_extract_glossary=False,  # keep prompts deterministic & avoid using
         #                                 MeTranslator for term extraction
         ocr_workaround=os.environ.get("ME_OCR_WORKAROUND") == "1",
-        qps=qps,
-        pool_max_workers=qps,
+        qps=1000,                              # offline; matches limiter above
+        pool_max_workers=POOL_MAX_WORKERS,
         debug=False,
     )
 

@@ -173,6 +173,13 @@ def _glossary_warnings(T: dict[str, str]) -> list[str]:
 
 def main() -> int:
     global _ENC
+    # This is the LEGACY v2.0 source-keyed validation path. The current
+    # pure-pipe workflow (v2.6+) does not use build_outputs / export_texts /
+    # split_work -- those scripts are dormant. If you meant to validate modern
+    # pure-pipe outputs, this tool does not apply to them.
+    print("[me] NOTE: this is the LEGACY v2.0 source-keyed path.")
+    print("[me]       Pure-pipe (v2.6+) does not use build_outputs/"
+          "export_texts/split_work; this script is dormant.")
     _ENC = _require_tiktoken()
 
     from me_translator import INPUT_MARKER, _extract_json_input, _sha

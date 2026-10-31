@@ -3,7 +3,7 @@ name: babeldoc-offline-translate
 description: >-
   Offline collect→translate→replay pipeline that makes the agent itself the
   LLM translation backend for BabelDOC / pdf2zh PDF translation (layout
-  preserved, EN→ZH by default, any language pair via env). v2.6 ("pure-pipe"):
+  preserved, EN→ZH by default, any language pair via env). v2.8 ("pure-pipe" + skew-tolerant parse):
   feed BabelDOC's verbatim prompts straight to the agent, preserve <bN> tags
   byte-for-byte, merge responses directly into llm_outputs.json — no
   source-keyed intermediate and no tag re-injection step. Use when
@@ -13,9 +13,9 @@ description: >-
   run must serve pre-translated text through a custom BaseTranslator.
 ---
 
-# BabelDOC Offline Translator (agent-as-LLM) — v2.6 pure-pipe
+# BabelDOC Offline Translator (agent-as-LLM) — v2.8 skew-tolerant
 
-> **Version: v2.6** (pure-pipe). The authoritative version history lives in
+> **Version: v2.8**. The authoritative version history lives in
 > `CHANGELOG.md` — keep this line, the title, and that file in sync.
 
 Turn the agent into BabelDOC's translation API. No network calls, no API
@@ -112,6 +112,18 @@ automatically: collect/replay copy the PDF to `%TEMP%\me_short\<sha8>\`, run
 with short input/output/working dirs, then copy the rendered PDFs back to
 `out_<mode>/`. A short copy of the PDF is still a good precaution for extreme
 paths.
+
+**Skewed OCR lines (scanned books).** babeldoc 0.6.x silently drops any
+character whose text matrix is rotated >0.1° from the axes. Warped scans carry
+per-line OCR skew of ±0.5°+, so whole paragraphs (typically at page tops and
+bottoms) never reach `prompts.jsonl` — the zh page then shows the raw English
+image and no missing log exists (the engine never asked). Since skill v2.7
+`run_translation.py` snaps near-horizontal chars to 0° (near-vertical to
+±90°) with tolerance `ME_SKEW_TOLERANCE_DEG` (default 5, `0` disables), for
+both collect and replay. Symptom check: if a scanned book's collect count
+looks low or spot-checks show systematic first/last-paragraph misses, re-run
+collect with the patch (it is on by default) — re-collect appends
+incrementally, then `pipe_prep.py` chunks only the new sources.
 
 ### 1. Collect
 

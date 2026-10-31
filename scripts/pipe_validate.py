@@ -11,8 +11,9 @@ variants) against its ``llm_chunk_*.json`` counterpart:
 
 This is the gate that was previously hand-rolled per book as ``_validate.py``.
 Run it BEFORE ``pipe_merge.py``. Exit 0 only when every translated chunk is
-present and clean; exit 3 on any missing chunk or broken record, so a non-zero
-exit means "do not merge yet".
+present and clean. Non-zero means "do not merge yet": exit 2 for setup errors
+(work dir missing or 0 chunks found — e.g. forgot pipe_prep or wrong --work),
+exit 3 for any missing chunk or broken record.
 
 Usage:
   python pipe_validate.py [--work DIR]
@@ -113,6 +114,12 @@ def main() -> int:
         p for p in work.glob("chunk_*.json") if not p.name.startswith("chunks_")
     )
     total = len(chunks)
+    if total == 0:
+        print(
+            f"[me] FAIL: 0 chunk_*.json found in {work} — did you run "
+            f"pipe_prep.py first, or point --work at the right directory?"
+        )
+        return 2
     all_problems: list[str] = []
     done = 0
     for c in chunks:
